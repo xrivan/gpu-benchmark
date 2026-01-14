@@ -77,21 +77,59 @@ def benchmark_flops(gpu_type: str, dtype, size: int, num_trials: int = 5):
     except Exception as e:
         print(f"  > Failed: {e}")
 
-# Main: Auto-size for your 12GB RTX 3060 (~5GB safe usage)
-if cp.cuda.is_available():
-    gpu_type = 'cuda'
-    total_mem_gb = cp.cuda.Device(0).mem_info[1] / 1e9
-    safe_size = int(math.sqrt((5e9 / 3 / 2)))  # ~5GB for FP16 (2 bytes/elem)
+def get_enhanced_device_info():
+    """
+    Reports as much device info as possible using available backends,
+    """
+    info = {'type': 'unknown', 'name': 'Unknown', 'total_memory_gb': 0.0, 'capability': (0, 0)}
+
+    # Try CuPy / CUDA first (since this is a CuPy script)
+    try:
+        if cp.cuda.is_available():
+            prop = cp.cuda.runtime.getDeviceProperties(0)
+            info.update({
+                'type': 'cuda',
+                'name': prop['name'].decode('utf-8'),
+                'total_memorygb': prop['totalGlobalMem'] / 1e9,
+                'capability': (prop['major'], prop['minor'])
+            })
+    except Exception:
+        pass
+
+    # Try NPU via torch_npu if installed (for reporting only)
+    try:
+        import torch_npu
+        if torch_npu.npu.is_available():
+            name = torch_npu.npu.get_device_name(0)
+            total_mem = 0.0
+            if hasattr(torch_npu.npu, 'get_device_properties'):
+                props = torch_npu.npu.get_device_properties(0)
+                total_mem = getattr(props, 'total_memory', 0) / 1e9
+            # Note: we don't override CUDA if npu exist; just show awareness
+            print(f"[INFO] NPU detected: {name} ({total_mem:.1f} GB)")
+    except Exception:
+        pass
+
+    return info
+
+# Main
+# Get rich device info 
+dev_info = get_enhanced_device_info()
+if dev_info['type'] == 'cuda':
+    total_mem_gb = dev_info['total_memorygb']
+    safe_size = int(math.sqrt(5e9 / 6))
     safe_size = (safe_size // 128) * 128
     safe_size = max(safe_size, 8192)
+    print(f"{dev_info['name']} (SM {dev_info['capability'][0]}.{dev_info['capability'][1]}, "
+          f"{total_mem_gb:.1f} GB VRAM) – Using size {safe_size}x{safe_size}")
 else:
-    print("CUDA not available – run on CPU with NumPy (no Tensor Cores).")
-    exit()
+    # Still allow you to proceed if you want — no exit!
+    print("CUDA not detected via CuPy, but proceeding per user intent.")
+    safe_size = 8192  # or whatever default you prefer
 
-print(f"RTX 3060 detected ({total_mem_gb:.1f} GB VRAM) – Using size {safe_size}x{safe_size}")
 print("=" * 60)
 
 # Run benchmarks for FP32, FP16, INT8
-benchmark_flops(gpu_type, cp.float32, safe_size)
-benchmark_flops(gpu_type, cp.float16, safe_size)
-benchmark_flops(gpu_type, cp.int8, safe_size)
+benchmark_flops('cuda', cp.float32, safe_size)
+benchmark_flops('cuda', cp.float16, safe_size)
+benchmark_flops('cuda', cp.int8, safe_size)
